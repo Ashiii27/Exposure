@@ -1,1 +1,1 @@
-export const botMeta = () => ({})
+export { renderOgHtml } from '../og/template.js';

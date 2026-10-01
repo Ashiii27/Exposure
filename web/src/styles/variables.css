@@ -1,1 +1,14 @@
-:root { --primary: #0af; }
+:root {
+  --bg: #0b1020;
+  --bg-raised: #131a30;
+  --bg-panel: #0f1526;
+  --text: #e7ecf5;
+  --text-dim: #94a3b8;
+  --accent: #38bdf8;
+  --accent-strong: #0ea5e9;
+  --border: #1e293b;
+  --primary: var(--accent);
+  --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  --radius: 12px;
+}
