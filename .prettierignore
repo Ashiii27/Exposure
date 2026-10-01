@@ -1,0 +1,9 @@
+node_modules
+dist
+lists/build
+coverage
+test-results
+playwright-report
+data
+pnpm-lock.yaml
+package-lock.json

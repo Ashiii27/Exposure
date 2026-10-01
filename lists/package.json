@@ -1,5 +1,13 @@
 {
   "name": "lists",
-  "version": "0.0.0",
-  "private": true
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Downloads and normalizes open tracker lists into the merged index used by Exposure classification.",
+  "scripts": {
+    "fetch": "bash fetch.sh"
+  },
+  "dependencies": {
+    "@exposure/shared": "*"
+  }
 }

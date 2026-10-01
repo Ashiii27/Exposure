@@ -1,0 +1,38 @@
+{
+  "name": "exposure",
+  "version": "0.1.0",
+  "private": true,
+  "description": "See what a web page really does behind the scenes.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "workspaces": [
+    "packages/shared",
+    "lists",
+    "scanner",
+    "web",
+    "worker"
+  ],
+  "scripts": {
+    "setup": "bash scripts/setup.sh",
+    "fetch-lists": "bash lists/fetch.sh",
+    "build": "npm run build:web",
+    "build:web": "npm run build --workspace web",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit -p packages/shared && tsc --noEmit -p lists && tsc --noEmit -p scanner && tsc --noEmit -p web && tsc --noEmit -p worker",
+    "test": "vitest run",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@types/node": "^22.0.0",
+    "eslint": "^9.39.5",
+    "prettier": "^3.9.9",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.71.0",
+    "vitest": "^3.2.7"
+  }
+}

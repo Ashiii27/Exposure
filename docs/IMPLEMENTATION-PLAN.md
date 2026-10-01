@@ -288,7 +288,17 @@ Three choices stretch the 10 minutes much further than "30 scans/day" suggests:
 
 Phases, order and effort follow the brief. Each phase lists the scaffold files it fills. "Done when" is the acceptance gate.
 
-### Phase 0 — Foundation (0.5 day)
+### Phase 0 — Foundation (0.5 day) — ✅ COMPLETE (2026-10-01)
+**Done-when satisfied:** `npm ci && npm run build && npm test` green locally and in CI; shared imports proven from scanner, web and worker (dedicated contract tests in each). 98 tests, 13 files, 5 packages.
+
+*Implementation notes and deviations:*
+- `vitest.workspace.ts` → `vitest.config.ts` with `projects` (the workspace-file format is legacy in Vitest 3; projects is the current mechanism).
+- More than stubs landed where the work was pure and contract-shaped: the full zod `ScanResult` schema, the full score formula, the full SSRF validator (static + resolved-address + DoH helper), and format-verified Disconnect/EasyPrivacy normalizers + merge. DDG subset selection stays in Phase 2 as planned.
+- Worker middleware was rewritten Workers-native now (the Express-shaped stubs were unfillable); `og/template.tsx` (JSX) became a string-based `template.ts` — both per the plan's Phase 5/6 direction, pulled early for a green typecheck.
+- Versions pinned to a verified-compatible set: TS 5.9.3, ESLint 9.39.5, typescript-eslint 8.71, Vitest 3.2.7, Vite 8.3.1, zod 4.6.5, ipaddr.js 2.5.0. (ESLint 10 / TS 7 exist; tseslint compatibility isn't there yet. Re-check at Phase 4.)
+- The URL-validator test matrix caught a real bypass (`localhost.localdomain` passed the loopback rule) — fixed by rejecting any `localhost` label. Tests earning their keep on day one.
+- `scanner/sites.csv` still holds the placeholder row (Phase 1 fills the 10 test sites); worker migrations still placeholder SQL (Phase 5).
+
 **Goal: installable, type-checked, linted, tested monorepo with the shared package and CI.**
 - Root `package.json` (npm workspaces: `packages/shared`, `lists`, `scanner`, `web`, `worker`), `.gitignore` (node_modules, dist, `.wrangler`, `.env`, `.dev.vars`, `lists/build`, `data`, `*.har`, coverage), `.nvmrc` (22).
 - `tsconfig.base.json`: `strict: true`, `moduleResolution: bundler`, `noUncheckedIndexedAccess`, `forceConsistentCasingInFileNames`.
