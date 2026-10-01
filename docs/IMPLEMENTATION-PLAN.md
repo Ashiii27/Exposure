@@ -1,8 +1,10 @@
 # Exposure — Implementation Plan
 
-Status: v1.1, for review. Written 2026-10-01 after a full inspection of the repo at commit `3bcf14f` ("initialised the repo") and verification of external facts (Cloudflare limits, tracker-list licenses) against current sources. Links inline.
+Status: v1.2, for review. Written 2026-10-01 after a full inspection of the repo at commit `3bcf14f` ("initialised the repo") and verification of external facts (Cloudflare limits, tracker-list licenses) against current sources. Links inline.
 
 Revision rule: at the end of every phase, spend 30 minutes re-estimating the next phase and updating this doc. A plan that never changes is a plan nobody is reading.
+
+Stopping rule: v1.2 is the last planning-only revision — it fixes a real storage-growth defect (§7) and adds score calibration (§Phase 2). Further changes should come from phase-gate feedback while building, not from more paper passes. Start Phase 0.
 
 Inputs: the project brief (Website X-ray / Exposure), the actual repo contents, and the checks listed in §2.
 
@@ -87,12 +89,13 @@ Exposure/
 GitHub Actions cron (03:00 UTC)
   → npm ci, lists/fetch.sh, build trackers-index
   → scanner batch over ~300 sites (Playwright Chromium, concurrency 3–4)
-  → aggregate → data/nightly/YYYY-MM-DD.json + leaderboard-history.json
-  → generate OG preview PNGs (screenshot of a local template page) → R2
-  → push JSON to `data` branch (code history stays clean)
+  → aggregate → per-site JSON + leaderboard + trends
+  → upload full results to R2: results/latest/<host>.json (overwritten nightly) + results/<date>/ (30-day retention)
+  → generate OG preview PNGs (screenshot of a local template page) → R2, latest set only
+  → push compact aggregates to `data` branch (leaderboard.json + trends.csv — a few MB per *year*)
   → seed top-500 results into D1 via an authenticated ingest route on the Worker
     (popular URLs become cache hits that cost zero browser time)
-  → build web (pulls latest data) → `wrangler pages deploy` (Direct Upload)
+  → build web with the aggregates from the same workflow run → `wrangler pages deploy` (Direct Upload)
 ```
 
 **Live path (scarce, cached hard):**
@@ -261,6 +264,14 @@ Three choices stretch the 10 minutes much further than "30 scans/day" suggests:
 2. **Domain-level cache fallback.** Exact-URL cache (24h TTL) → registrable-domain cache (recent scan of the same site, returned with a visible "sampled from \<url\>" label) → live scan. Most visitors type famous homepages; they should almost never touch the browser.
 3. **Browser-seconds metering** (table above) plus single-flight dedupe per URL (§6.7), so concurrent requests for the same URL share one scan.
 
+**Data growth and retention (v1.2 fix — v1.1 would have bloated):** 300 sites at ~60 KB per result is ~18 MB of new data every night. Committed to a git `data` branch, that is 2–3 GB of git history within a year — every checkout drags it along, for history nothing needs. And 300 OG PNGs kept forever would eat the 10 GB R2 free tier in about a year. Revised split:
+
+- **R2** holds everything bulky: `results/latest/<host>.json` (overwritten in place, ~20–30 MB total, stable) and `results/<date>/` (deleted after 30 days by the nightly job — trends only need aggregates, not full history). OG images: latest night's set only; old shared links fall back to a static branded card (WhatsApp/X cache OG images aggressively anyway).
+- **`data` branch** holds only compact aggregates: `leaderboard.json` + `trends.csv` (one ~200-byte line per site per night → a few MB per *year*) + the sites index. Public transparency of history without the bulk.
+- **D1** keeps live-scan results for 90 days unless viewed (pruned during nightly ingest); the seeded top-500 rows are refreshed in place, never accumulated.
+- **Web** embeds only the compact aggregates at build time (same workflow run produces them); the full per-site JSON is fetched client-side from a public read route on the Worker (`GET /api/results/<host>` → R2), so the bundle stays small.
+- Numbers re-checked at Phase 4 gate; all fits free tier with years of headroom.
+
 ---
 
 ## 8. Legal and licensing (fill `docs/LEGAL.md` in Phase 2)
@@ -284,6 +295,7 @@ Phases, order and effort follow the brief. Each phase lists the scaffold files i
 - `eslint.config.js` (flat config + typescript-eslint), fix `vitest.workspace.ts` to actually include the packages.
 - Create `packages/shared` (schema/classify/score/url-validator/fingerprint init-script/constants stubs with real types), `.env.example` rewritten (worker `.dev.vars.example`), `scripts/setup.sh` (installs deps, playwright chromium, fetches lists).
 - `lists/fetch.sh` real (curl the three sources + license headers → `lists/build/`), normalizers converted to TS.
+- Pin exact versions (no `^`) for `playwright` and `@cloudflare/playwright`, commit the lockfile — parity verified in the Phase 1 spike must stay verified through upgrades.
 - `docs/`: fill PRD.md + ARCHITECTURE.md from §3–§5 of this plan; real README (what/why/how-to-run); set the GitHub repo description. Docs scope is deliberately cut: PERSONAS.md and COMPETITORS.md get at most one paragraph each at launch — portfolio time goes to METHODOLOGY and THREAT-MODEL, which are the pages security-role interviewers actually read.
 - `.github/workflows/ci.yml`: install, lint, typecheck, `vitest run`, web build — on PRs to main. (Nightly workflow arrives in Phase 4; CI early is cheap and protects everything after.)
 
@@ -302,6 +314,7 @@ Phases, order and effort follow the brief. Each phase lists the scaffold files i
 **Goal: domains classified, companies mapped, score computed — all in shared.**
 - Fill `lists/merge-lists.js` + normalizers (TS): merged index per §5.1; `scanner/src/classify.ts` + `scorer.ts` become shared imports; `aggregate.ts` (per-domain rollups, summary counts).
 - Tests: known domains (doubleclick → advertising/Google; facebook → social/Meta; unmatched → uncategorized), scorer golden cases, EasyPrivacy subset parser fixtures.
+- **Calibrate the score** against ~20 diverse scanned sites: clean sites must land A/B, tracker-heavy must land F. Uncalibrated weights reliably put every site in the same grade, which kills the headline stat. Adjust weights once, record the rationale in METRICS.md.
 - Fill `docs/LEGAL.md`, `docs/METRICS.md`.
 
 **Done when:** output JSON contains `domains[].categories/company`, `score` with components + one-sentence explanation, `summary.companiesLearned`; all lists refreshed by one script.
@@ -316,7 +329,7 @@ Phases, order and effort follow the brief. Each phase lists the scaffold files i
 
 ### Phase 4 — Nightly bulk scans + launch (3–4 days)
 **Goal: first public launch — leaderboard fed by real nightly data, $0.**
-- `.github/workflows/nightly-scan.yml`: cron `0 3 * * *` + `workflow_dispatch`; Playwright browser cached; batch over ~300 sites (`scanner/src/batch.ts`: concurrency 3–4, retries, per-site timeout, failure isolation), aggregate + leaderboard history, push to `data` branch, build web with latest data, `wrangler pages deploy` (secrets via Actions secrets).
+- `.github/workflows/nightly-scan.yml`: cron `0 3 * * *` + `workflow_dispatch`; Playwright browser cached; batch over ~300 sites (`scanner/src/batch.ts`: concurrency 3–4, retries, per-site timeout, failure isolation), aggregate; upload full results to R2 (`latest/` overwritten, dated copies kept 30 days); push only compact aggregates (`leaderboard.json` + `trends.csv`) to the `data` branch; build web with those aggregates; `wrangler pages deploy` (secrets via Actions secrets).
 - `sites.csv` ← real list (Tranco top-N intersected with a hand-pruned set; see §12), `aggregate.ts` leaderboard stats, `web` leaderboard page with 7/30-day deltas, loading/error pages for scan failures, methodology page (limits, sources, licenses, what "companies learned" means).
 - Fill `docs/METHODOLOGY.md`.
 
@@ -381,7 +394,7 @@ Phases, order and effort follow the brief. Each phase lists the scaffold files i
 Assumptions unless corrected:
 1. `packages/shared` is added per brief recommendation #1 (it deletes the scaffold's scanner/worker duplication).
 2. Playwright everywhere (regular in Actions, `@cloudflare/playwright` in the Worker), per §2.2.
-3. Nightly results live on a `data` branch + R2, never on main.
+3. Nightly results: full JSON in R2, compact aggregates on the `data` branch, none of it on main (per §7 retention).
 4. OG images generated in the nightly job, not in the Worker.
 5. Tracker lists are fetched at build time, never committed.
 6. Web stays framework-less TS + Vite + d3-force (matches the scaffold; keeps the bundle tiny; shows engineering craft).
@@ -391,3 +404,4 @@ Open questions (answer anytime; none block Phase 0–3):
 2. Domain: `exposure.pages.dev` + `api.exposure.pages.dev`-style worker name for now, or buy a custom domain later (~$10/yr, the only conceivable cost)?
 3. Worker as a separate deployable vs consolidating into Pages Functions — assumed separate (simpler Browser Run binding story); revisit if ops get annoying.
 4. Public leaderboard of "worst sites": keep to neutral, factual presentation (assumed) to avoid legal heat from named companies.
+ual presentation (assumed) to avoid legal heat from named companies.
