@@ -1,0 +1,2 @@
+name = "exposure-worker"
+main = "./dist/index.js"

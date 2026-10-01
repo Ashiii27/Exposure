@@ -1,0 +1,3 @@
+# Competitors
+
+Placeholder competitor analysis.
