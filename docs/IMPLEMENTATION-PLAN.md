@@ -1,6 +1,8 @@
 # Exposure — Implementation Plan
 
-Status: v1, for review. Written 2026-10-01 after a full inspection of the repo at commit `3bcf14f` ("initialised the repo") and verification of external facts (Cloudflare limits, tracker-list licenses) against current sources. Links inline.
+Status: v1.1, for review. Written 2026-10-01 after a full inspection of the repo at commit `3bcf14f` ("initialised the repo") and verification of external facts (Cloudflare limits, tracker-list licenses) against current sources. Links inline.
+
+Revision rule: at the end of every phase, spend 30 minutes re-estimating the next phase and updating this doc. A plan that never changes is a plan nobody is reading.
 
 Inputs: the project brief (Website X-ray / Exposure), the actual repo contents, and the checks listed in §2.
 
@@ -88,6 +90,8 @@ GitHub Actions cron (03:00 UTC)
   → aggregate → data/nightly/YYYY-MM-DD.json + leaderboard-history.json
   → generate OG preview PNGs (screenshot of a local template page) → R2
   → push JSON to `data` branch (code history stays clean)
+  → seed top-500 results into D1 via an authenticated ingest route on the Worker
+    (popular URLs become cache hits that cost zero browser time)
   → build web (pulls latest data) → `wrangler pages deploy` (Direct Upload)
 ```
 
@@ -97,7 +101,10 @@ Visitor submits URL (web)
   → POST /api/scan (Worker)
   → validate URL (shared SSRF rules, DoH re-resolve) → 400 on any violation
   → D1 cache lookup by canonical URL (24h TTL) → hit: return existing result
-  → D1 quota check+increment (UTC-day row) → over budget: friendly 429 page, point to pre-scanned sites
+  → registrable-domain fallback: recent scan of the same site exists
+    → return it, labeled "sampled from <url>" (no browser time spent)
+  → D1 quota check+increment (browser-seconds, UTC-day row) → over budget:
+    friendly 429 page, point to pre-scanned sites
   → Browser Run scan via @cloudflare/playwright, same shared capture modules (≤40s budget)
   → classify + score (shared) → validate against schema → store in D1 under short ID
   → return ScanResult → web renders graph
@@ -237,7 +244,7 @@ THREAT-MODEL.md gets filled from this section in Phase 5 (assets, actors, trust 
 
 | Resource | Free limit | Design consequence |
 |---|---|---|
-| Browser Run time | 10 min/day | Live-scan budget **30 scans/day** (at ~15–20s, leaves headroom); quota row per UTC day in D1; hard cap before scan |
+| Browser Run time | 10 min/day | **Meter the quota in browser-seconds**, not scan count: 600 s/day budget, live scans capped at 450 s/day (≈30 × 15 s) to keep headroom; a slow 25 s scan can't silently eat three fast ones' budget |
 | New browser instances | 1 / 20s, 3 concurrent | One kept-alive browser session, scan via new tabs; serialize live scans |
 | Browser timeout | 60s | 40s scan budget, abort early on idle |
 | Workers | 100k req/day | Trivial; fine |
@@ -246,7 +253,13 @@ THREAT-MODEL.md gets filled from this section in Phase 5 (assets, actors, trust 
 | Pages | unlimited bandwidth, 500 Git builds | Nightly deploys via Direct Upload (`wrangler pages deploy`), which doesn't burn Git builds |
 | Actions | free for public repos | ~2h/night for 300 sites; reject-cookies double-scan ≈ 4h (Phase 7) — still fine |
 
-Quota-exhausted UX: clear message, "come back tomorrow or browse tonight's pre-scanned results", link to leaderboard. Cache-hit rate determines how far 30 live scans actually stretch.
+Quota-exhausted UX: clear message, "come back tomorrow or browse tonight's pre-scanned results", link to leaderboard.
+
+Three choices stretch the 10 minutes much further than "30 scans/day" suggests:
+
+1. **Nightly seed into D1.** The nightly job pushes its top-500 results into D1 through an authenticated ingest route on the Worker (`POST /api/ingest`, shared-secret header). Binding inserts handle large JSON; `wrangler d1 execute --file` won't (statement-size limit). Popular URLs then cost zero browser time — live quota is spent only on novel URLs, which is exactly what it should be spent on.
+2. **Domain-level cache fallback.** Exact-URL cache (24h TTL) → registrable-domain cache (recent scan of the same site, returned with a visible "sampled from \<url\>" label) → live scan. Most visitors type famous homepages; they should almost never touch the browser.
+3. **Browser-seconds metering** (table above) plus single-flight dedupe per URL (§6.7), so concurrent requests for the same URL share one scan.
 
 ---
 
@@ -271,7 +284,7 @@ Phases, order and effort follow the brief. Each phase lists the scaffold files i
 - `eslint.config.js` (flat config + typescript-eslint), fix `vitest.workspace.ts` to actually include the packages.
 - Create `packages/shared` (schema/classify/score/url-validator/fingerprint init-script/constants stubs with real types), `.env.example` rewritten (worker `.dev.vars.example`), `scripts/setup.sh` (installs deps, playwright chromium, fetches lists).
 - `lists/fetch.sh` real (curl the three sources + license headers → `lists/build/`), normalizers converted to TS.
-- `docs/`: fill PRD.md + ARCHITECTURE.md from §3–§5 of this plan; real README (what/why/how-to-run); set the GitHub repo description.
+- `docs/`: fill PRD.md + ARCHITECTURE.md from §3–§5 of this plan; real README (what/why/how-to-run); set the GitHub repo description. Docs scope is deliberately cut: PERSONAS.md and COMPETITORS.md get at most one paragraph each at launch — portfolio time goes to METHODOLOGY and THREAT-MODEL, which are the pages security-role interviewers actually read.
 - `.github/workflows/ci.yml`: install, lint, typecheck, `vitest run`, web build — on PRs to main. (Nightly workflow arrives in Phase 4; CI early is cheap and protects everything after.)
 
 **Done when:** `npm ci && npm run build && npm test` passes in CI on a clean runner; a trivial shared import works from scanner, web and worker.
@@ -281,6 +294,7 @@ Phases, order and effort follow the brief. Each phase lists the scaffold files i
 - Fill: `browser.ts` (launch, context, stealth-lite UA), `network-capture.ts` (`page.on('request'/'response')`, domain/timing/size/initiator; manual capture, no CDP, no `recordHar`), `fingerprint-wrappers.ts` (moves to shared init-script; wraps canvas `toDataURL`/`getImageData`, `WebGLRenderingContext.getParameter`/`readPixels`, `AudioContext` (`createOscillator`/`getChannelData`/`createAnalyser`), font enumeration (`document.fonts`, `offsetWidth` probes); logs domain + script URL + count), `cookie-extractor.ts` (incl. lifetime computation), `storage-extractor.ts` (localStorage/sessionStorage/IndexedDB names+lengths), `scroll-simulator.ts` (2–3 scroll passes to trigger lazy content), `scan.ts` (orchestration: navigate → settle (network idle-ish, capped) → scroll → extract), `url-validator.ts` (shared), `har-export.ts` (HAR 1.2 from captured data), `schema.ts` (re-export shared), `types.ts` (re-export shared).
 - `sites.csv` → 10 diverse test sites (news, sports, recipe, gov, tech).
 - Fingerprint init-script is a **string in shared**, consumed by `addInitScript(script)` — identical bytes in scanner and later the Worker.
+- **Browser Run parity spike (first 2–3 hours of the phase, not Phase 5):** stand up a scratch Worker with the Browser Run binding and run the same shared capture modules under `@cloudflare/playwright` against one URL. Confirms `request`/`response` events, `addInitScript` and interception behave identically to local Playwright before a week of work is built on that assumption. If the fork has gaps, choose the mitigation now (Puppeteer fork, or a thin capture shim in shared) — discovering this in Phase 5 would trash the whole live-scan design. Costs a few minutes of the daily browser budget; worth it.
 
 **Done when:** 10 different sites produce clean schema-valid JSON (requests, redirects, cookies, storage, fingerprint events all populated); flakes documented (retry ×2, timeout budget enforced).
 
@@ -310,7 +324,9 @@ Phases, order and effort follow the brief. Each phase lists the scaffold files i
 
 ### Phase 5 — Live scans (≈1 week)
 **Goal: visitors scan any URL, quota-safe and SSRF-hardened.**
-- Worker: fill `url-validator` (shared SSRF rules), `scan.ts` route (validate → D1 cache → quota → Browser Run scan via `@cloudflare/playwright` + shared capture modules → classify/score → store), `browser-scan.ts` (kept-alive session, tab-per-scan, redirect re-validation via interception), `cache.ts`/`quota.ts`/`rate-limit.ts` (D1), `id.ts` (8-char base62 + collision retry), migrations (results + quota tables per §3.2, real SQLite DDL), `wrangler.toml` bindings (browser, D1, R2, vars), middleware rewritten Workers-style, `seed-d1.sh`, `deploy.sh`.
+- Worker: fill `url-validator` (shared SSRF rules), `scan.ts` route (validate → D1 cache → domain fallback → browser-seconds quota → Browser Run scan via `@cloudflare/playwright` + shared capture modules → classify/score → store), `browser-scan.ts` (kept-alive session, tab-per-scan, redirect re-validation via interception), `cache.ts`/`quota.ts`/`rate-limit.ts` (D1), `id.ts` (8-char base62 + collision retry), migrations (results + quota tables per §3.2, real SQLite DDL), `wrangler.toml` bindings (browser, D1, R2, vars), middleware rewritten Workers-style, `seed-d1.sh`, `deploy.sh`.
+- **Storage spike (first hour):** verify D1 handles 100–300 KB result rows via binding inserts and reads at an acceptable latency; if it's awkward, D1 holds metadata + ids and result bodies go to R2, with the same interface so nothing else changes.
+- Wire the nightly → D1 seeding (`routes/ingest.ts`, shared-secret auth) so popular URLs stop costing browser time from day one of Phase 5.
 - Web: wire `api.ts` to the worker (`https://api.<domain>`), loading states, quota-exhausted + blocked-site UX.
 - Fill `docs/THREAT-MODEL.md` from §6.
 
